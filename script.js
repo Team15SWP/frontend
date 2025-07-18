@@ -81,16 +81,51 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const scoreKey = () => 'pp_solved_' + (userNameSp.textContent || 'anon');
 
-  const loadScore = () => {
-    solvedCount = parseInt(localStorage.getItem(scoreKey()) || '0', 10);
-    updateScoreDisplay();
+  const loadScore = async () => {
+    try {
+      const token = localStorage.getItem('pp_token');
+      if (!token) {
+        console.log('No token found, setting score to 0');
+        solvedCount = 0;
+        updateScoreDisplay();
+        return;
+      }
+
+      console.log('Fetching score from backend...');
+      const res = await fetch(apiUrl('/get_stats'), {
+        headers: getAuthHeaders()
+      });
+      
+      console.log('Score response status:', res.status);
+      
+      if (res.ok) {
+        const stats = await res.json();
+        console.log('Backend stats received:', stats);
+        const oldScore = solvedCount;
+        solvedCount = stats.total || 0;
+        console.log(`Score updated: ${oldScore} → ${solvedCount}`);
+        updateScoreDisplay();
+      } else {
+        console.error('Failed to load score from backend, status:', res.status);
+        solvedCount = 0;
+        updateScoreDisplay();
+      }
+    } catch (err) {
+      console.error('Error loading score:', err);
+      solvedCount = 0;
+      updateScoreDisplay();
+    }
   };
-  const saveScore = () => localStorage.setItem(scoreKey(), solvedCount);
+  
+  // Remove saveScore function since backend handles score updates
+  // const saveScore = () => localStorage.setItem(scoreKey(), solvedCount);
 
   const updateScoreDisplay = () => {
+    console.log('Updating score display, current score:', solvedCount);
     scoreCntSp.textContent = solvedCount;
     scoreText.textContent  =
       `You have solved ${solvedCount} task${solvedCount === 1 ? '' : 's'} 🎉`;
+    console.log('Score display updated');
   };
 
   scoreBtn.addEventListener('click', () => {
@@ -107,10 +142,11 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentTaskRaw    = '';
   let isAdmin           = false;
   let syllabusLoaded    = false;
-  let adminFails        = parseInt(localStorage.getItem('adminFailedAttempts') || '0', 10);
   let diffPromptMsg     = null;
-  let currentHints      = [];
-  let hintCount         = 0;
+  const submittingTopics = new Set(); // Track loading state per topic
+  const disabledTopics = new Set(); // Track which topics have disabled inputs
+  const generatingTasks = new Set(); // Track task generation state per topic
+  const topicHints = {}; // { topicKey: { hints: [...], count: number } }
 
   profileDiv.style.display = 'none';
   logoutBtn.style.display  = 'none';
@@ -121,12 +157,12 @@ document.addEventListener('DOMContentLoaded', () => {
   topicsList.style.display = 'none';
 
   // Restore login state from localStorage
-  const restoreLoginState = () => {
+  const restoreLoginState = async () => {
     const isLoggedIn = localStorage.getItem('pp_loggedIn') === 'true';
     if (isLoggedIn) {
       const userName = localStorage.getItem('pp_userName') || 'User';
       const isAdmin = localStorage.getItem('pp_isAdmin') === 'true';
-      finishLogin(userName, isAdmin);
+      await finishLogin(userName, isAdmin);
     }
   };
 
@@ -198,24 +234,64 @@ document.addEventListener('DOMContentLoaded', () => {
   const fetchEval = async (url, opts={}) => {
     const r = await fetch(url, opts);
     if (!r.ok) throw new Error(await r.text());
-    const data = await r.json();
-    if ('message' in data) return data.message;
-    return `${data.correct ? '✅ Correct solution!' : '❌ Wrong solution.'}`
-      + (data.feedback ? `\n\n${data.feedback}` : '');
+    return r.json();
+  };
+
+  // Helper function to create authenticated fetch options
+  const getAuthHeaders = (includeAuth = true) => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (includeAuth) {
+      const token = localStorage.getItem('pp_token');
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+    }
+    return headers;
+  };
+
+  // Helper function to validate session and refresh if needed
+  const validateSession = async () => {
+    const token = localStorage.getItem('pp_token');
+    if (!token) {
+      return false;
+    }
+    
+    try {
+      const res = await fetch(apiUrl('/get_stats'), {
+        headers: getAuthHeaders()
+      });
+      
+      if (res.status === 401) {
+        // Token expired or invalid
+        localStorage.removeItem('pp_token');
+        localStorage.removeItem('pp_loggedIn');
+        localStorage.removeItem('pp_userName');
+        localStorage.removeItem('pp_isAdmin');
+        return false;
+      }
+      
+      return res.ok;
+    } catch (err) {
+      console.error('Session validation error:', err);
+      return false;
+    }
   };
 
   const updateTopicList = arr => {
     syllabusLoaded = arr.length > 0;
     topicsList.innerHTML = '';
 
+    // Get current admin status from localStorage to ensure it's correct
+    const currentIsAdmin = localStorage.getItem('pp_isAdmin') === 'true';
+
     if (!syllabusLoaded) {
       topicsList.style.display  = 'none';
-      noTopicsMsg.style.display = isAdmin ? 'none' : 'block';
+      noTopicsMsg.style.display = currentIsAdmin ? 'none' : 'block';
       userInput.disabled        = true;
       submitCodeBtn.disabled    = true;
       selectedTopic             = null;
 
-      if (isAdmin) {
+      if (currentIsAdmin) {
         uploadBtn.style.display  = 'block';
         if (clearBtn) clearBtn.style.display = 'none';
       }
@@ -235,7 +311,7 @@ document.addEventListener('DOMContentLoaded', () => {
       li.addEventListener('click', () => handleTopic(li));
     });
 
-    if (isAdmin) {
+    if (currentIsAdmin) {
       if (!clearBtn) {
         clearBtn = document.createElement('button');
         clearBtn.id          = 'clear-syllabus-btn';
@@ -256,6 +332,23 @@ document.addEventListener('DOMContentLoaded', () => {
     hintBtn.disabled = true;
     if (quoteBlock) quoteBlock.style.display = 'none';
   }
+
+  const updateInputStates = () => {
+    console.log('updateInputStates called, currentTopicKey:', currentTopicKey);
+    
+    if (!currentTopicKey) {
+      console.log('No currentTopicKey, keeping inputs in default state');
+      return;
+    }
+    
+    const hasTask = Boolean(lastTasks[currentTopicKey]);
+    
+    // Simplified: only disable submit button if no task
+    submitCodeBtn.disabled = !hasTask;
+    userInput.disabled = false; // Always allow typing
+    
+    console.log(`Topic: ${currentTopicKey}, hasTask: ${hasTask}, submitBtn disabled: ${!hasTask}`);
+  };
 
   const handleTopic = li => {
   // Check if user is logged in before allowing topic selection
@@ -310,15 +403,29 @@ document.addEventListener('DOMContentLoaded', () => {
   hintBtn.disabled       = !hasTask;   // то же для «Hint»
   diffBox.style.display  = 'flex';  // изменила здесь
 
+  updateInputStates();
   };
 
+  // Function to fetch syllabus with authentication
+  const fetchSyllabus = async () => {
+    const token = localStorage.getItem('pp_token');
+    if (!token) return;
 
-  fetch('/get_syllabus')
-    .then(r => (r.ok ? r.json() : null))
-    .then(d => {
-      if (d && Array.isArray(d.topics)) updateTopicList(d.topics);
-    })
-    .catch(() => {});
+    try {
+      const res = await fetch(apiUrl('/get_syllabus'), {
+        headers: getAuthHeaders()
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.topics)) {
+          updateTopicList(data.topics);
+        }
+      }
+    } catch (err) {
+      console.log('Error fetching syllabus:', err);
+    }
+  };
 
   const clearSyllabus = () => {
     updateTopicList([]);
@@ -326,7 +433,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     fileInput.value = '';
 
-    fetch('/clear_syllabus', { method: 'DELETE' }).catch(()=>{});
+    fetch(apiUrl('/delete_syllabus'), { 
+      method: 'DELETE',
+      headers: getAuthHeaders()
+    }).catch(()=>{});
 
     alert('Syllabus cleared');
   };
@@ -337,12 +447,9 @@ document.addEventListener('DOMContentLoaded', () => {
   modalClose.addEventListener('click', closeModal);
 
   userTab.addEventListener('click', () => {
-    userTab.classList.add('active'); adminTab.classList.remove('active');
-    loginForm.classList.remove('hidden'); signupForm.classList.add('hidden'); adminForm.classList.add('hidden');
-  });
-  adminTab.addEventListener('click', () => {
-    adminTab.classList.add('active'); userTab.classList.remove('active');
-    adminForm.classList.remove('hidden'); loginForm.classList.add('hidden'); signupForm.classList.add('hidden');
+    userTab.classList.add('active');
+    loginForm.classList.remove('hidden'); 
+    signupForm.classList.add('hidden');
   });
   goSignup.addEventListener('click', () => {
     loginForm.classList.add('hidden'); signupForm.classList.remove('hidden');
@@ -389,16 +496,16 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       users.push({ name, email, pwd });
       saveUsers(users);
-      finishLogin(name, false);
+      await finishLogin(name, false);
       closeModal();
       return;
     }
 
     try {
-      const res = await fetch('/signup', {
+      const res = await fetch(apiUrl('/signup'), {
         method : 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body   : JSON.stringify({ login: name, email, password: pwd })
+        body   : JSON.stringify({ username: name, email, password: pwd })
       });
 
       if (!res.ok) {
@@ -408,7 +515,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const data = await res.json();
-      finishLogin(data.name || name, false);
+      await finishLogin(data.name || name, false);
       if (data.token) localStorage.setItem('pp_token', data.token); // Save token after signup
       closeModal();
     } catch (e2) {
@@ -419,15 +526,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   loginForm.addEventListener('submit', async e => {
     e.preventDefault();
-    const ident = document.getElementById('li-identifier').value.trim();
+    const username = document.getElementById('li-identifier').value.trim();
     const pwd   = document.getElementById('li-password').value.trim();
-    if (!ident || !pwd) return;
+    if (!username || !pwd) return;
 
     try {
-      const res = await fetch('/login', {
+      const res = await fetch(apiUrl('/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier: ident, password: pwd })
+        body: JSON.stringify({ username: username, password: pwd })
       });
 
       if (!res.ok) {
@@ -437,39 +544,25 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const data = await res.json();
-      finishLogin(data.name, false);
+      
+      // Handle role-based login
+      const isAdmin = data.role === 'admin';
+      await finishLogin(username, isAdmin);
+      
       if (data.token) localStorage.setItem('pp_token', data.token); // Save token after login
+      closeModal();
     } catch (err) {
       loginError.textContent = `Error: ${err.message}`;
     }
   });
 
 
-  adminForm.addEventListener('submit', e => {
-    e.preventDefault();
-    if (adminFails >= 3) return;
-    const pwd = document.getElementById('admin-password-input').value.trim();
-    if (pwd === 'admin123') {
-      adminFails = 0; localStorage.setItem('adminFailedAttempts','0');
-      adminAttemptsInfo.textContent = '';
-      finishLogin('Admin', true);
-    } else {
-      adminFails += 1; localStorage.setItem('adminFailedAttempts', adminFails);
-      adminAttemptsInfo.textContent = `Wrong password (${adminFails}/3)`;
-      if (adminFails >= 3) {
-        adminAttemptsInfo.textContent = 'UI locked after 3 failed attempts.';
-        adminForm.querySelector('input').disabled = true;
-        adminForm.querySelector('button').disabled = true;
-      }
-    }
-  });
-
   const adjustLayoutHeight = () => {
     const bannerHeight = adminBanner.classList.contains('hidden') ? 0 : adminBanner.offsetHeight;
     layoutBox.style.height = `calc(100vh - 64px - ${bannerHeight}px)`;
   };
 
-  const finishLogin = (name, admin) => {
+  const finishLogin = async (name, admin) => {
     isAdmin = admin;
     profileDiv.style.display = 'flex';
     logoutBtn.style.display  = 'inline-block';
@@ -484,16 +577,15 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem('pp_userName', name);
     localStorage.setItem('pp_isAdmin', admin.toString());
 
+    // Show upload button for admin users
     if (admin && !syllabusLoaded) {
       uploadBtn.style.display = 'block';
     } else {
       uploadBtn.style.display = 'none';
     }
 
+    // Show clear button for admin users when syllabus is loaded
     if (clearBtn) clearBtn.style.display = 'none';
-
-
-
     if (admin && syllabusLoaded) {
       if (!clearBtn) {
         clearBtn = document.createElement('button');
@@ -509,12 +601,17 @@ document.addEventListener('DOMContentLoaded', () => {
       clearBtn.style.display = 'none';
     }
 
+    // Hide "no topics" message for admin users
     if (admin && !syllabusLoaded) noTopicsMsg.style.display = 'none';
+    
     scoreBtn.classList.remove('hidden');
-    notificationSettingsBtn.classList.remove('hidden'); // <-- Show bell after login
-    loadScore()
+    notificationSettingsBtn.classList.remove('hidden');
+    await loadScore();
     closeModal();
     adjustLayoutHeight();
+    
+    // Fetch syllabus after login
+    fetchSyllabus();
   };
 
   logoutBtn.addEventListener('click', () => {
@@ -530,7 +627,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!syllabusLoaded) noTopicsMsg.style.display = 'block';
     adjustLayoutHeight();
     scoreBtn.classList.add('hidden');
-    notificationSettingsBtn.classList.add('hidden'); // <-- Hide bell after logout
+    notificationSettingsBtn.classList.add('hidden');
     localStorage.removeItem('pp_token'); // Remove token on logout
     // Clear login state from localStorage
     localStorage.removeItem('pp_loggedIn');
@@ -551,61 +648,44 @@ document.addEventListener('DOMContentLoaded', () => {
       return alert('Only .txt and .pdf files allowed');
     }
 
-    let text;
-    if (name.endsWith('.txt')) {
-      text = await new Promise(res => {
-        const r = new FileReader();
-        r.onload = () => res(r.result);
-        r.readAsText(f);
+    // Create FormData and send the file directly
+    const formData = new FormData();
+    formData.append('file', f);
+
+    try {
+      const response = await fetch(apiUrl('/save_syllabus'), {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('pp_token')}`
+          // Don't set Content-Type - let browser set it with boundary for FormData
+        },
+        body: formData
       });
-    } else {
-      const buf = await f.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-      let full = '';
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        full += content.items.map(it => it.str).join(' ') + '\n';
+      
+      console.log('Save syllabus response status:', response.status);
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Syllabus saved successfully:', data);
+        
+        // Update the UI with the topics returned from the backend
+        if (data && Array.isArray(data.topics)) {
+          updateTopicList(data.topics);
+          alert('Syllabus uploaded ✅');
+        } else {
+          alert('Syllabus uploaded but no topics returned');
+        }
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Save syllabus failed:', errorData);
+        alert(`Failed to save syllabus: ${errorData.detail || response.statusText}`);
       }
-      text = full;
+    } catch (error) {
+      console.error('Network error saving syllabus:', error);
+      alert('Network error saving syllabus');
     }
-
-    const idx = text.search(/Tentative Course Schedule:/i);
-    const scheduleText = idx >= 0 ? text.slice(idx) : text;
-
-    const endIdx = scheduleText.search(/Means of Evaluation:/i);
-    const scheduleBlock = endIdx >= 0
-      ? scheduleText.slice(0, endIdx)
-      : scheduleText;
-
-    const re = /Week\s*\d+\s+(.+?)(?=Week\s*\d+\s+|$)/gis;
-    const topics = [];
-    let m;
-    while ((m = re.exec(scheduleBlock)) !== null) {
-      topics.push(m[1].trim());
-    }
-
-
-    if (topics.length === 0) {
-      console.log('Parsed chunk:', scheduleText);
-      return alert('No course topics found in the uploaded file.');
-    }
-    
-    updateTopicList(topics);
-    fetch('/save_syllabus', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topics })
-    }).catch(() => {});
-    alert('Syllabus uploaded ✅');
   });
 
-
-  if (adminFails >= 3) {
-    adminAttemptsInfo.textContent = 'UI locked after 3 failed attempts.';
-    adminForm.querySelector('input').disabled = true;
-    adminForm.querySelector('button').disabled = true;
-  }
 
   userInput.addEventListener('input', () => {
     userInput.style.height = 'auto';
@@ -633,6 +713,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!selectedTopic) {
       return showMessage('❗️ Please select topic first', 'bot');
     }
+    
+    // Prevent multiple simultaneous task generation requests
+    if (generatingTasks.has(currentTopicKey)) {
+      console.log('Task generation already in progress for this topic, ignoring click');
+      return;
+    }
+    
+    // Map frontend difficulty to backend difficulty
+    const difficultyMap = {
+      'beginner': 'easy',
+      'medium': 'medium', 
+      'hard': 'hard'
+    };
+    const backendDifficulty = difficultyMap[level] || 'easy';
+    
     currentDifficulty = level;
     hintBtn.disabled = true;   // закрываем кнопку
     attemptMade      = false;  // нет ещё попыток
@@ -647,48 +742,69 @@ document.addEventListener('DOMContentLoaded', () => {
     showMessage(labels[level], 'user');
     const stopNotice = makeWaitingNotice('⏳ Generating your exercise, please wait…');
 
-    try {
-      const res = await fetch(
-        `/generate_task?topic=${encodeURIComponent(selectedTopic)}&difficulty=${encodeURIComponent(level)}`
-      );
-      const json = await res.json();
-      console.log("Raw JSON response from backend:", json);
-      currentTaskRaw = json.task;
+    // Set loading state for this specific topic
+    generatingTasks.add(requestKey);
+    console.log(`Starting task generation for topic: ${requestKey}`);
 
+    try {
+      const res = await fetch(apiUrl('/generate_task'), {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          topic: selectedTopic,
+          difficulty: backendDifficulty
+        })
+      });
+      
       if (!res.ok) {
-        throw new Error(json.error || res.statusText);
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || res.statusText);
+      }
+      
+      const taskObj = await res.json();
+      console.log("Raw JSON response from backend:", taskObj);
+      
+      // Handle null response (timeout)
+      if (!taskObj) {
+        throw new Error('Task generation timed out. Please try again.');
       }
 
-      const taskObj = JSON.parse(json.task);
-
-      // Всегда сохраняем в общий кэш
-      lastTasks[requestKey]      = json.task;
+      // Store the entire task object
+      lastTasks[requestKey] = taskObj;
       lastDifficulty[requestKey] = level;
 
       // Обновляем локальные переменные, только если пользователь всё ещё на этой теме
       const isStillHere = currentTopicKey === requestKey;
       if (isStillHere) {
-        currentTaskRaw = json.task;
+        currentTaskRaw = taskObj;
       }
 
-
-      
+      // Extract hints
       if (taskObj.Hints && typeof taskObj.Hints === 'object') {
-        currentHints = [
+        const hints = [
           taskObj.Hints.Hint1 || '',
           taskObj.Hints.Hint2 || '',
           taskObj.Hints.Hint3 || ''
         ].filter(hint => hint.trim() !== '');
+        
+        // Store hints per topic
+        topicHints[requestKey] = {
+          hints: hints,
+          count: 0
+        };
       } else {
-        currentHints = [];
+        topicHints[requestKey] = {
+          hints: [],
+          count: 0
+        };
       }
 
-      hintCount = 0;
+      console.log('Parsed hints for topic:', requestKey, topicHints[requestKey]);
 
-      let out = `📝 *${taskObj["Task name"]}*\n\n`;
-      out += `${taskObj["Task description"]}\n\n`;
+      let out = `📝 *${taskObj["Task_name"]}*\n\n`;
+      out += `${taskObj["Task_description"]}\n\n`;
       out += `🧪 Sample cases:\n`;
-      taskObj["Sample input cases"].forEach(({ input, expected_output }) => {
+      taskObj["Sample_input_cases"].forEach(({ input, expected_output }) => {
         out += `• Input: ${input} → Expected: ${expected_output}\n`;
       });
 
@@ -705,10 +821,13 @@ document.addEventListener('DOMContentLoaded', () => {
         hintBtn.disabled       = true;
       }
 
-      console.log('Parsed hints:', currentHints);
+      console.log('Parsed hints:', topicHints[requestKey]);
     } catch (err) {
       showMessage(`Error: ${err.message}`, 'bot');
     } finally {
+      // Clear loading state for this specific topic
+      generatingTasks.delete(requestKey);
+      console.log(`Task generation completed for topic: ${requestKey}`);
       stopNotice();
     }
     if (currentTopicKey === requestKey) {
@@ -718,6 +837,8 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   submitCodeBtn.addEventListener('click', async () => {
+  console.log('Submit button clicked');
+  
   // Check if user is logged in before allowing code submission
   const isLoggedIn = localStorage.getItem('pp_loggedIn') === 'true';
   if (!isLoggedIn) {
@@ -727,23 +848,47 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   
   if (!selectedTopic) {
+    console.log('No selectedTopic, returning');
     return showMessage('❗️ Please select topic first', 'bot');
   }
 
-  /* 1. “Фиксируем” всё, что относится к текущему топику —
+  console.log('Selected topic:', selectedTopic);
+  console.log('Current topic key:', currentTopicKey);
+  console.log('Submitting topics:', Array.from(submittingTopics));
+  console.log('Disabled topics:', Array.from(disabledTopics));
+
+  /* 1. "Фиксируем" всё, что относится к текущему топику —
         дальше пользователь может уйти куда угодно, а мы работаем
         с этими сохранёнными значениями. */
   const requestKey   = currentTopicKey;          // snake_case ключ темы
   const topicName    = selectedTopic;            //  название
-  const taskRaw      = lastTasks[requestKey];    // ← нужная задача
+  const taskObj      = lastTasks[requestKey];    // ← нужная задача
   const diffToSend   = lastDifficulty[requestKey];
 
-  if (!taskRaw) {
+  // Prevent multiple simultaneous submissions
+  if (submittingTopics.has(requestKey)) {
+    console.log('Submission already in progress for this topic, ignoring click');
+    console.log('Request key:', requestKey);
+    console.log('Submitting topics:', Array.from(submittingTopics));
+    return;
+  }
+
+  console.log('No submission in progress, proceeding with submission');
+
+  if (!taskObj) {
     return showMessage('❗️ First generate a task for this topic', 'bot');
   }
 
   const code = userInput.value.trim();
   if (!code) return;
+
+  // Set loading state for this specific topic
+  submittingTopics.add(requestKey);
+  
+  // Temporarily disable inputs during submission (simple approach)
+  submitCodeBtn.disabled = true;
+  userInput.disabled = true;
+  console.log(`Starting submission for topic: ${requestKey}, disabled inputs temporarily`);
 
   /* 2. Печатаем код в нужной ветке чата */
   pushUserCode(code, requestKey);
@@ -751,40 +896,84 @@ document.addEventListener('DOMContentLoaded', () => {
   attemptMade      = true;   // теперь попытка есть
   hintBtn.disabled = false;  // открываем подсказки
 
-
   /* 3. Готовим UI */
   hintBtn.disabled = false;
   userInput.value  = '';
   userInput.style.height = 'auto';
   const stopNotice = makeWaitingNotice('⏳ Checking your solution…');
 
+  // Reset hint count for this topic when making a new submission
+  if (topicHints[requestKey]) {
+    topicHints[requestKey].count = 0;
+    console.log(`Reset hint count for topic: ${requestKey}`);
+  }
+
   /* 4. Отправляем на сервер ровно тот task, что лежит в кэше топика */
   try {
-    const respText = await fetchEval('/submit_code', {
+    // Check if user is still authenticated
+    const isSessionValid = await validateSession();
+    if (!isSessionValid) {
+      throw new Error('Session expired. Please log in again.');
+    }
+
+    const res = await fetch(apiUrl('/submit_code'), {
       method : 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body   : JSON.stringify({
-        topic      : topicName,
-        difficulty : diffToSend,
-        task       : taskRaw,        // ← главное изменение
+        task       : taskObj["Task_name"],  // ← отправляем только название задачи как строку
         code
       })
     });
+    
+    // Check if response is JSON or HTML
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      // Received HTML instead of JSON - likely an error page
+      const htmlResponse = await res.text();
+      console.error('Received HTML response:', htmlResponse.substring(0, 200));
+      throw new Error('Server returned HTML instead of JSON. This usually means the server is down or there\'s an authentication issue. Please try refreshing the page and logging in again.');
+    }
+    
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Server error (${res.status})`);
+    }
+
+    const respText = await res.json();
+    console.log('Raw response from submit_code:', respText);
 
     /* 5. Ответ кладём в нужный топик */
-    pushToChat(respText, 'bot', requestKey);
-
-    // --- SCORE FIX: increment only if correct ---
-    if (respText && respText.startsWith('✅ Correct solution!')) {
-      solvedCount++;
-      saveScore();
-      updateScoreDisplay();
+    // Handle new JSON response format from backend
+    let feedbackMessage;
+    if (typeof respText === 'object' && respText.feedback) {
+      feedbackMessage = respText.feedback;
+      console.log('Extracted feedback from object:', feedbackMessage);
+    } else {
+      feedbackMessage = respText; // Fallback for string responses
+      console.log('Using response as string:', feedbackMessage);
     }
-    // --- END SCORE FIX ---
+    
+    console.log('Final feedback message:', feedbackMessage);
+    console.log('Message starts with "✅ Correct solution!"?', feedbackMessage.startsWith('✅ Correct solution!'));
+    
+    pushToChat(feedbackMessage, 'bot', requestKey);
+
+    // Always refresh score from backend after any submission
+    console.log('Refreshing score from backend after submission...');
+    await loadScore();
+    console.log('Score refreshed from backend. Current score:', solvedCount);
 
   } catch (err) {
+    console.error('Submit code error:', err);
     pushToChat(`Error: ${err.message}`, 'bot', requestKey);
   } finally {
+    // Clear loading state for this specific topic
+    submittingTopics.delete(requestKey);
+    
+    // Re-enable inputs
+    submitCodeBtn.disabled = false;
+    userInput.disabled = false;
+    console.log(`Submission completed for topic: ${requestKey}, re-enabled inputs`);
     stopNotice();
   }
 });
@@ -802,14 +991,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!syllabusLoaded) return;
     if (!selectedTopic) return showMessage('❗️ Please select topic first', 'bot');
     if (!currentDifficulty) return showMessage('❗️ Please select difficulty first', 'bot');
-    if (!currentHints.length) return showMessage('❗️ No hints available for this task.', 'bot');
-    if (hintCount >= 3) {
+    if (!topicHints[currentTopicKey] || !topicHints[currentTopicKey].hints.length) return showMessage('❗️ No hints available for this task.', 'bot');
+    if (topicHints[currentTopicKey].count >= 3) {
       showMessage("You’ve used all your hints for this submission. Try improving your code or ask for feedback.", 'bot');
       return;
     }
     showMessage('💡 Hint please! 🥺', 'user');
-    showMessage(`💡 Hint: ${currentHints[hintCount]}`, 'bot');
-    hintCount++;
+    showMessage(`💡 Hint: ${topicHints[currentTopicKey].hints[topicHints[currentTopicKey].count]}`, 'bot');
+    topicHints[currentTopicKey].count++;
   });
 
   const showHintTip = m => {
@@ -839,6 +1028,7 @@ document.addEventListener('DOMContentLoaded', () => {
   notificationSettingsBtn.addEventListener('click', () => {
     notificationSettingsModal.classList.remove('hidden');
     loadNotificationSettings();
+    force24HourFormat(); // Force 24-hour format
   });
   notificationSettingsClose.addEventListener('click', () => {
     notificationSettingsModal.classList.add('hidden');
@@ -848,22 +1038,95 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadNotificationSettings() {
     try {
       const token = localStorage.getItem('pp_token');
-      if (!token) return;
-      const res = await fetch('/notification-settings', {
-        headers: { 'Authorization': `Bearer ${token}` }
+      if (!token) {
+        console.log('No token found, cannot load notification settings');
+        return;
+      }
+      
+      console.log('Loading notification settings from backend...');
+      const res = await fetch(apiUrl('/notification-settings'), {
+        headers: getAuthHeaders()
       });
+      
+      console.log('Notification settings response status:', res.status);
+      
       if (res.ok) {
         const settings = await res.json();
-        notificationEnabled.checked = settings.enabled;
-        notificationTime.value = settings.notification_time;
+        console.log('Received notification settings:', settings);
+        
+        // Apply settings to form - use backend field names
+        notificationEnabled.checked = settings.enabled || false;
+        notificationTime.value = settings.notification_time || '09:00';
+        
+        // Set day checkboxes - use backend field name
+        const selectedDays = settings.notification_days || [1, 2, 3, 4, 5];
         notificationDays.forEach(cb => {
-          cb.checked = settings.notification_days.includes(cb.value);
+          cb.checked = selectedDays.includes(parseInt(cb.value));
+        });
+        
+        console.log('Notification settings loaded successfully');
+      } else {
+        console.error('Failed to load notification settings, status:', res.status);
+        const errorData = await res.json().catch(() => ({}));
+        console.error('Error details:', errorData);
+        
+        // Set default values if loading fails
+        notificationEnabled.checked = false;
+        notificationTime.value = '09:00';
+        notificationDays.forEach(cb => {
+          cb.checked = [1, 2, 3, 4, 5].includes(parseInt(cb.value));
         });
       }
     } catch (e) {
-      // Optionally show error
+      console.error('Error loading notification settings:', e);
+      
+      // Set default values on error
+      notificationEnabled.checked = false;
+      notificationTime.value = '09:00';
+      notificationDays.forEach(cb => {
+        cb.checked = [1, 2, 3, 4, 5].includes(parseInt(cb.value));
+      });
     }
   }
+
+  // Force 24-hour format for time input
+  const force24HourFormat = () => {
+    const timeInput = document.getElementById('notification-time');
+    if (timeInput) {
+      // Add validation for 24-hour format
+      timeInput.addEventListener('input', function(e) {
+        let value = this.value.replace(/[^0-9:]/g, '');
+        
+        // Auto-insert colon after 2 digits
+        if (value.length === 2 && !value.includes(':')) {
+          value += ':';
+        }
+        
+        // Limit to HH:MM format
+        if (value.length > 5) {
+          value = value.substring(0, 5);
+        }
+        
+        this.value = value;
+      });
+      
+      // Validate on blur
+      timeInput.addEventListener('blur', function() {
+        const timeRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;
+        if (this.value && !timeRegex.test(this.value)) {
+          alert('Please enter time in 24-hour format (HH:MM, e.g., 09:00, 14:30)');
+          this.value = '09:00';
+        }
+      });
+      
+      // Set a default value in 24-hour format if empty
+      if (!timeInput.value) {
+        timeInput.value = '09:00';
+      }
+      
+      console.log('24-hour format validation added for time input');
+    }
+  };
 
   // Save settings to backend
   notificationSettingsForm.addEventListener('submit', async e => {
@@ -878,12 +1141,9 @@ document.addEventListener('DOMContentLoaded', () => {
       notification_days: days
     };
     try {
-      const res = await fetch('/notification-settings', {
+      const res = await fetch(apiUrl('/notification-settings'), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
+        headers: getAuthHeaders(),
         body: JSON.stringify(settings)
       });
       if (res.ok) {
@@ -899,7 +1159,77 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Restore login state on page load
-  restoreLoginState();
+  (async () => {
+    await restoreLoginState();
+  })();
   
   adjustLayoutHeight();
 });
+
+  // Test function to manually test save_syllabus endpoint
+  window.testSaveSyllabus = async () => {
+    const testTopics = [
+      "Introduction to Programming",
+      "Variables and Data Types", 
+      "Control Structures",
+      "Functions",
+      "Modules and Packages"
+    ];
+    
+    console.log('Testing save_syllabus with topics:', testTopics);
+    
+    try {
+      const response = await fetch(apiUrl('/save_syllabus'), {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ topics: testTopics })
+      });
+      
+      console.log('Test save syllabus response status:', response.status);
+      
+      if (response.ok) {
+        console.log('Test syllabus saved successfully');
+        alert('Test syllabus saved successfully!');
+        updateTopicList(testTopics);
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Test save syllabus failed:', errorData);
+        alert(`Test failed: ${errorData.detail || response.statusText}`);
+      }
+    } catch (error) {
+      console.error('Test network error:', error);
+      alert('Test network error');
+    }
+  };
+
+  // Test function to manually check score
+  window.testScore = async () => {
+    console.log('=== TESTING SCORE SYSTEM ===');
+    console.log('Current solvedCount:', solvedCount);
+    console.log('scoreCntSp element:', scoreCntSp);
+    console.log('scoreText element:', scoreText);
+    
+    try {
+      await loadScore();
+      console.log('Score test completed');
+    } catch (error) {
+      console.error('Score test error:', error);
+    }
+  };
+
+  // Test function to check input states
+  window.testInputs = () => {
+    console.log('=== TESTING INPUT STATES ===');
+    console.log('currentTopicKey:', currentTopicKey);
+    console.log('selectedTopic:', selectedTopic);
+    console.log('submitCodeBtn.disabled:', submitCodeBtn.disabled);
+    console.log('userInput.disabled:', userInput.disabled);
+    console.log('submittingTopics:', Array.from(submittingTopics));
+    console.log('disabledTopics:', Array.from(disabledTopics));
+    console.log('lastTasks:', lastTasks);
+    
+    // Force enable inputs for testing
+    submitCodeBtn.disabled = false;
+    userInput.disabled = false;
+    console.log('Forced inputs enabled for testing');
+  };

@@ -96,7 +96,6 @@
 
     <div class="tab-selector">
       <button id="user-tab"  class="tab active">User</button>
-      <button id="admin-tab" class="tab">Admin</button>
     </div>
 
     <form id="login-form" class="login-form">
@@ -117,12 +116,6 @@
       <p class="switch-text">Already have an account?
         <span id="go-login" class="link">Log in!</span></p>
     </form>
-
-    <form id="admin-form" class="login-form hidden">
-      <input type="password" id="admin-password-input" placeholder="Admin password" required />
-      <button type="submit" class="login-submit">Enter</button>
-      <div id="admin-attempts" class="attempts-info"></div>
-    </form>
   </div>
 </div>
 
@@ -141,8 +134,8 @@
       </div>
       
       <div class="setting-group">
-        <label for="notification-time">Notification time:</label>
-        <input type="time" id="notification-time" value="09:00" />
+        <label for="notification-time">Notification time (24-hour format):</label>
+        <input type="text" id="notification-time" value="09:00" placeholder="HH:MM" pattern="[0-9]{2}:[0-9]{2}" maxlength="5" />
       </div>
       
       <div class="setting-group">
@@ -166,6 +159,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 <script>pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';</script>
+<script src="/config.js"></script>
 <script src="/script.js" defer></script>
 </body>
 </html>
