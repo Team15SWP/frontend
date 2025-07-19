@@ -78,6 +78,69 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let currentTopicKey  = null; // snake_case ключ выбранной темы
   let attemptMade = false;
+  let isPageRefreshing = false; // Flag to prevent saving error messages during refresh
+
+  // Helper functions for chat persistence
+  const saveChatsToStorage = () => {
+    const userName = localStorage.getItem('pp_userName');
+    if (userName) {
+      localStorage.setItem(`pp_chats_${userName}`, JSON.stringify(chats));
+    }
+  };
+
+  const loadChatsFromStorage = () => {
+    const userName = localStorage.getItem('pp_userName');
+    if (userName) {
+      const savedChats = localStorage.getItem(`pp_chats_${userName}`);
+      console.log('Loading chats from localStorage for user:', userName);
+      console.log('Saved chats data:', savedChats);
+      if (savedChats) {
+        const parsedChats = JSON.parse(savedChats);
+        console.log('Parsed chats:', parsedChats);
+        Object.keys(parsedChats).forEach(key => {
+          chats[key] = parsedChats[key];
+        });
+        console.log('Loaded chats into memory:', Object.keys(chats));
+      } else {
+        console.log('No saved chats found for user:', userName);
+      }
+    }
+  };
+
+  const clearChatsFromStorage = () => {
+    const userName = localStorage.getItem('pp_userName');
+    if (userName) {
+      localStorage.removeItem(`pp_chats_${userName}`);
+    }
+  };
+
+  // Helper functions for topic selection persistence
+  const saveSelectedTopicToStorage = () => {
+    const userName = localStorage.getItem('pp_userName');
+    if (userName && selectedTopic) {
+      localStorage.setItem(`pp_selectedTopic_${userName}`, selectedTopic);
+    }
+  };
+
+  const loadSelectedTopicFromStorage = () => {
+    const userName = localStorage.getItem('pp_userName');
+    if (userName) {
+      const savedTopic = localStorage.getItem(`pp_selectedTopic_${userName}`);
+      if (savedTopic) {
+        selectedTopic = savedTopic;
+        currentTopicKey = savedTopic.toLowerCase().replace(/\s+/g, '_');
+        return savedTopic;
+      }
+    }
+    return null;
+  };
+
+  const clearSelectedTopicFromStorage = () => {
+    const userName = localStorage.getItem('pp_userName');
+    if (userName) {
+      localStorage.removeItem(`pp_selectedTopic_${userName}`);
+    }
+  };
 
   const scoreKey = () => 'pp_solved_' + (userNameSp.textContent || 'anon');
 
@@ -184,6 +247,8 @@ document.addEventListener('DOMContentLoaded', () => {
   if (currentTopicKey) {               // тема уже выбрана
     if (!chats[currentTopicKey]) chats[currentTopicKey] = [];
     chats[currentTopicKey].push(div.outerHTML);
+    console.log('Saving message to chat key:', currentTopicKey, 'Total messages for this topic:', chats[currentTopicKey].length);
+    saveChatsToStorage(); // Save to localStorage
   }
   return div;
   };
@@ -194,6 +259,7 @@ document.addEventListener('DOMContentLoaded', () => {
   div.className  = `message ${role}`;
   div.textContent = text;
   chats[topicKey].push(div.outerHTML);
+  saveChatsToStorage(); // Save to localStorage
 
   if (topicKey === currentTopicKey) {          // чат открыт
     messagesBox.appendChild(div);
@@ -210,6 +276,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (!chats[topicKey]) chats[topicKey] = [];
   chats[topicKey].push(div.outerHTML);
+  saveChatsToStorage(); // Save to localStorage
 
   if (topicKey === currentTopicKey) {
     messagesBox.appendChild(div);
@@ -344,11 +411,12 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const hasTask = Boolean(lastTasks[currentTopicKey]);
     
-    // Simplified: only disable submit button if no task
+    // Enable submit button only if there's a task, otherwise allow difficulty selection
     submitCodeBtn.disabled = !hasTask;
     userInput.disabled = false; // Always allow typing
+    hintBtn.disabled = !hasTask; // Enable hint button only if there's a task
     
-    console.log(`Topic: ${currentTopicKey}, hasTask: ${hasTask}, submitBtn disabled: ${!hasTask}`);
+    console.log(`Topic: ${currentTopicKey}, hasTask: ${hasTask}, submitBtn disabled: ${!hasTask}, hintBtn disabled: ${!hasTask}`);
   };
 
   const handleTopic = li => {
@@ -371,15 +439,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* 2. сохраняем DOM-историю прежней темы */
   if (currentTopicKey) {
+    console.log('Saving current topic chat before switching. Current topic:', currentTopicKey, 'Messages:', messagesBox.children.length);
     chats[currentTopicKey] = Array.from(
       messagesBox.children,
       el => el.outerHTML
     );
+    console.log('Saved chat for topic:', currentTopicKey, 'Messages saved:', chats[currentTopicKey].length);
   }
 
   /* 3. вычисляем новый ключ */
   selectedTopic   = li.textContent.trim();
   currentTopicKey = selectedTopic.toLowerCase().replace(/\s+/g, '_');
+  console.log('Generated topic key:', currentTopicKey, 'from topic:', selectedTopic);
+  
+  // Save selected topic to localStorage
+  saveSelectedTopicToStorage();
 
   /* 4. вытаскиваем кэш-данные */
   currentDifficulty = lastDifficulty[currentTopicKey] ?? null;
@@ -389,10 +463,17 @@ document.addEventListener('DOMContentLoaded', () => {
   diffBox.style.display  = 'flex';
   /* 5. восстанавливаем или очищаем чат */
   messagesBox.innerHTML = '';
-  if (chats[currentTopicKey]) {
+  console.log('Restoring chat for topic:', currentTopicKey);
+  console.log('Available chats:', Object.keys(chats));
+  console.log('Chat for current topic:', chats[currentTopicKey]);
+  console.log('Chat object before restoration:', JSON.stringify(chats, null, 2));
+  
+  if (chats[currentTopicKey] && chats[currentTopicKey].length > 0) {
+    console.log('Restoring', chats[currentTopicKey].length, 'messages for topic:', currentTopicKey);
     messagesBox.innerHTML = chats[currentTopicKey].join('');
     messagesBox.scrollTop = messagesBox.scrollHeight;
   } else {
+    console.log('No saved chat for topic:', currentTopicKey, '- showing initial messages');
     showMessage(selectedTopic, 'user');
     if (!currentTaskRaw)
       diffPromptMsg = showMessage('Select difficulty 👇', 'bot');
@@ -441,6 +522,68 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data && Array.isArray(data.topics)) {
           console.log('Updating topic list with:', data.topics);
           updateTopicList(data.topics);
+          
+          // Restore selected topic after syllabus is loaded
+          const savedTopic = loadSelectedTopicFromStorage();
+          console.log('Attempting to restore saved topic:', savedTopic);
+          console.log('Available topics:', data.topics);
+          console.log('Current chats in memory:', Object.keys(chats));
+          
+          if (savedTopic && data.topics.includes(savedTopic)) {
+            console.log('Found saved topic in syllabus, restoring...');
+            // Find the topic list item and restore directly without calling handleTopic
+            const topicItems = document.querySelectorAll('#topics-list li');
+            for (let li of topicItems) {
+              if (li.textContent.trim() === savedTopic) {
+                console.log('Found topic list item, restoring directly...');
+                
+                // Set the topic variables directly
+                selectedTopic = li.textContent.trim();
+                currentTopicKey = selectedTopic.toLowerCase().replace(/\s+/g, '_');
+                console.log('Generated topic key:', currentTopicKey, 'from topic:', selectedTopic);
+                
+                // Highlight the topic in UI
+                document.querySelectorAll('.sidebar li').forEach(e => e.classList.remove('active-topic'));
+                li.classList.add('active-topic');
+                
+                // Restore chat messages directly
+                messagesBox.innerHTML = '';
+                console.log('Restoring chat for topic:', currentTopicKey);
+                console.log('Available chats:', Object.keys(chats));
+                console.log('Chat for current topic:', chats[currentTopicKey]);
+                
+                if (chats[currentTopicKey] && chats[currentTopicKey].length > 0) {
+                  console.log('Restoring', chats[currentTopicKey].length, 'messages for topic:', currentTopicKey);
+                  messagesBox.innerHTML = chats[currentTopicKey].join('');
+                  messagesBox.scrollTop = messagesBox.scrollHeight;
+                } else {
+                  console.log('No saved chat for topic:', currentTopicKey, '- showing initial messages');
+                  showMessage(selectedTopic, 'user');
+                  diffPromptMsg = showMessage('Select difficulty 👇', 'bot');
+                }
+                
+                // Restore other topic data
+                currentDifficulty = lastDifficulty[currentTopicKey] ?? null;
+                currentTaskRaw = lastTasks[currentTopicKey] ?? '';
+                hintBtn.disabled = !currentTaskRaw;
+                submitCodeBtn.disabled = !currentTaskRaw;
+                diffBox.style.display = 'flex';
+                
+                // Only enable difficulty buttons if no task exists yet
+                const difficultyButtons = document.querySelectorAll('#difficulty-buttons button');
+                if (!currentTaskRaw) {
+                  difficultyButtons.forEach(btn => btn.disabled = false);
+                }
+                userInput.disabled = false;
+                
+                // Update input states
+                updateInputStates();
+                break;
+              }
+            }
+          } else {
+            console.log('No saved topic found or topic not in syllabus');
+          }
         } else {
           console.log('No topics found in syllabus data');
           updateTopicList([]);
@@ -471,6 +614,12 @@ document.addEventListener('DOMContentLoaded', () => {
     submittingTopics.clear();
     disabledTopics.clear();
     generatingTasks.clear();
+    
+    // Clear chat messages from localStorage
+    clearChatsFromStorage();
+    
+    // Clear selected topic from localStorage
+    clearSelectedTopicFromStorage();
     
     // Reset current session variables
     selectedTopic = null;
@@ -649,6 +798,14 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem('pp_userName', name);
     localStorage.setItem('pp_isAdmin', admin.toString());
 
+    // Load chat messages from localStorage
+    loadChatsFromStorage();
+    
+    // Load selected topic from localStorage
+    const savedTopic = loadSelectedTopicFromStorage();
+    console.log('finishLogin: Loaded saved topic:', savedTopic);
+    console.log('finishLogin: Chats loaded:', Object.keys(chats));
+
     // Show upload button for admin users
     if (admin && !syllabusLoaded) {
       uploadBtn.style.display = 'block';
@@ -719,6 +876,12 @@ document.addEventListener('DOMContentLoaded', () => {
     submittingTopics.clear();
     disabledTopics.clear();
     generatingTasks.clear();
+    
+    // Clear chat messages from localStorage
+    clearChatsFromStorage();
+    
+    // Clear selected topic from localStorage
+    clearSelectedTopicFromStorage();
     
     // Reset current session variables
     selectedTopic = null;
@@ -874,7 +1037,7 @@ document.addEventListener('DOMContentLoaded', () => {
     generatingTasks.add(requestKey);
     currentlyGeneratingTopic = requestKey;
     console.log(`Starting task generation for topic: ${requestKey}`);
-
+    
     // Disable difficulty buttons only if this is the current active topic
     if (currentTopicKey === requestKey) {
       const difficultyButtons = document.querySelectorAll('#difficulty-buttons button');
@@ -959,7 +1122,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
       console.log('Parsed hints:', topicHints[requestKey]);
     } catch (err) {
-      showMessage(`Error: ${err.message}`, 'bot');
+      console.error('Task generation error:', err);
+      // Only show error message if page is not being refreshed
+      if (!isPageRefreshing) {
+        showMessage(`Error: ${err.message}`, 'bot');
+      }
     } finally {
       // Clear loading state for this specific topic
       generatingTasks.delete(requestKey);
@@ -975,10 +1142,6 @@ document.addEventListener('DOMContentLoaded', () => {
       
       stopNotice();
     }
-    if (currentTopicKey === requestKey) {
-    submitCodeBtn.disabled = false;   // ← принудительно включаем
-    hintBtn.disabled = true;
- }
   };
 
   submitCodeBtn.addEventListener('click', async () => {
@@ -1110,7 +1273,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   } catch (err) {
     console.error('Submit code error:', err);
-    pushToChat(`Error: ${err.message}`, 'bot', requestKey);
+    // Only show error message if page is not being refreshed
+    if (!isPageRefreshing) {
+      pushToChat(`Error: ${err.message}`, 'bot', requestKey);
+    }
   } finally {
     // Clear loading state for this specific topic
     submittingTopics.delete(requestKey);
@@ -1307,6 +1473,26 @@ document.addEventListener('DOMContentLoaded', () => {
   (async () => {
     await restoreLoginState();
   })();
+  
+  // Detect page refresh to prevent saving error messages
+  window.addEventListener('beforeunload', () => {
+    isPageRefreshing = true;
+  });
+  
+  // Reset loading states on page load to handle interrupted requests
+  const resetLoadingStates = () => {
+    console.log('Resetting loading states on page load...');
+    generatingTasks.clear();
+    submittingTopics.clear();
+    disabledTopics.clear();
+    currentlyGeneratingTopic = null;
+    
+    // Don't re-enable buttons on page load - they should only be enabled after task generation response
+    console.log('Loading states reset complete - buttons will be enabled after task generation');
+  };
+  
+  // Call reset function on page load
+  resetLoadingStates();
   
   adjustLayoutHeight();
 });
