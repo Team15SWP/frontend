@@ -97,6 +97,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (savedChats) {
         const parsedChats = JSON.parse(savedChats);
         console.log('Parsed chats:', parsedChats);
+        
+        // Clean up stale generating messages from saved chats
+        Object.keys(parsedChats).forEach(topicKey => {
+          if (parsedChats[topicKey]) {
+            parsedChats[topicKey] = parsedChats[topicKey].filter(message => {
+              return !message.includes('⏳ Generating your exercise, please wait…');
+            });
+          }
+        });
+        
         Object.keys(parsedChats).forEach(key => {
           chats[key] = parsedChats[key];
         });
@@ -1487,8 +1497,23 @@ document.addEventListener('DOMContentLoaded', () => {
     disabledTopics.clear();
     currentlyGeneratingTopic = null;
     
+    // Clean up stale "generating" messages since generation was interrupted by refresh
+    cleanUpStaleGeneratingMessages();
+    
     // Don't re-enable buttons on page load - they should only be enabled after task generation response
     console.log('Loading states reset complete - buttons will be enabled after task generation');
+  };
+
+  // Clean up stale generating messages that were interrupted by page refresh
+  const cleanUpStaleGeneratingMessages = () => {
+    console.log('Cleaning up stale generating messages...');
+    const generatingMessages = document.querySelectorAll('.message.bot');
+    generatingMessages.forEach(message => {
+      if (message.textContent.includes('⏳ Generating your exercise, please wait…')) {
+        console.log('Removing stale generating message');
+        message.remove();
+      }
+    });
   };
   
   // Call reset function on page load
