@@ -675,6 +675,57 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.removeItem('pp_loggedIn');
     localStorage.removeItem('pp_userName');
     localStorage.removeItem('pp_isAdmin');
+    
+    // Clear all session data by deleting properties
+    Object.keys(chats).forEach(key => delete chats[key]);
+    Object.keys(lastTasks).forEach(key => delete lastTasks[key]);
+    Object.keys(lastDifficulty).forEach(key => delete lastDifficulty[key]);
+    Object.keys(topicHints).forEach(key => delete topicHints[key]);
+    submittingTopics.clear();
+    disabledTopics.clear();
+    generatingTasks.clear();
+    
+    // Reset current session variables
+    selectedTopic = null;
+    currentTopicKey = null;
+    currentDifficulty = null;
+    currentTaskRaw = '';
+    syllabusLoaded = false;
+    diffPromptMsg = null;
+    currentlyGeneratingTopic = null;
+    attemptMade = false;
+    solvedCount = 0;
+    
+    // Clear UI elements
+    messagesBox.innerHTML = '';
+    topicsList.innerHTML = '';
+    topicsList.style.display = 'none';
+    userInput.value = '';
+    userInput.disabled = true;
+    submitCodeBtn.disabled = true;
+    hintBtn.disabled = true;
+    diffBox.style.display = 'none';
+    
+    // Reset score display
+    scoreCntSp.textContent = '0';
+    scoreText.textContent = 'You have solved 0 tasks 🎉';
+    
+    // Clear any active topic selection
+    document.querySelectorAll('.sidebar li').forEach(li => {
+      li.classList.remove('active-topic');
+    });
+    
+    // Show quote again
+    if (quoteBlock) quoteBlock.style.display = 'block';
+    
+    // Hide main layout and show homepage
+    topBar.classList.add('hidden');
+    layoutBox.classList.add('hidden');
+    adminBanner.classList.add('hidden');
+    homepage.classList.remove('hidden');
+    
+    // Show "no topics" message
+    if (noTopicsMsg) noTopicsMsg.style.display = 'block';
   });
 
   uploadBtn.addEventListener('click', () => fileInput.click());
