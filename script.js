@@ -421,21 +421,39 @@ document.addEventListener('DOMContentLoaded', () => {
   // Function to fetch syllabus with authentication
   const fetchSyllabus = async () => {
     const token = localStorage.getItem('pp_token');
-    if (!token) return;
+    if (!token) {
+      console.log('No token found, cannot fetch syllabus');
+      return;
+    }
 
+    console.log('Fetching syllabus from backend...');
     try {
       const res = await fetch(apiUrl('/get_syllabus'), {
         headers: getAuthHeaders()
       });
       
+      console.log('Syllabus response status:', res.status);
+      
       if (res.ok) {
         const data = await res.json();
+        console.log('Syllabus data received:', data);
+        
         if (data && Array.isArray(data.topics)) {
+          console.log('Updating topic list with:', data.topics);
           updateTopicList(data.topics);
+        } else {
+          console.log('No topics found in syllabus data');
+          updateTopicList([]);
         }
+      } else {
+        console.error('Failed to fetch syllabus, status:', res.status);
+        const errorData = await res.json().catch(() => ({}));
+        console.error('Syllabus error details:', errorData);
+        updateTopicList([]);
       }
     } catch (err) {
-      console.log('Error fetching syllabus:', err);
+      console.error('Error fetching syllabus:', err);
+      updateTopicList([]);
     }
   };
 
@@ -527,8 +545,11 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const data = await res.json();
+      
+      // Save token BEFORE calling finishLogin
+      if (data.token) localStorage.setItem('pp_token', data.token);
+      
       await finishLogin(data.name || name, false);
-      if (data.token) localStorage.setItem('pp_token', data.token); // Save token after signup
       closeModal();
     } catch (e2) {
       showSuErr(`Network error: ${e2.message}`);
@@ -559,9 +580,11 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Handle role-based login
       const isAdmin = data.role === 'admin';
-      await finishLogin(username, isAdmin);
       
-      if (data.token) localStorage.setItem('pp_token', data.token); // Save token after login
+      // Save token BEFORE calling finishLogin
+      if (data.token) localStorage.setItem('pp_token', data.token);
+      
+      await finishLogin(username, isAdmin);
       closeModal();
     } catch (err) {
       loginError.textContent = `Error: ${err.message}`;
@@ -575,6 +598,8 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const finishLogin = async (name, admin) => {
+    console.log('finishLogin called with:', { name, admin });
+    
     isAdmin = admin;
     profileDiv.style.display = 'flex';
     logoutBtn.style.display  = 'inline-block';
@@ -618,12 +643,17 @@ document.addEventListener('DOMContentLoaded', () => {
     
     scoreBtn.classList.remove('hidden');
     notificationSettingsBtn.classList.remove('hidden');
+    
+    console.log('Loading score...');
     await loadScore();
+    console.log('Score loaded, now loading syllabus...');
+    
     closeModal();
     adjustLayoutHeight();
     
-    // Fetch syllabus after login
-    fetchSyllabus();
+    // Fetch syllabus after login - await it to ensure it completes
+    await fetchSyllabus();
+    console.log('Syllabus loaded, login complete');
   };
 
   logoutBtn.addEventListener('click', () => {
