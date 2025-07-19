@@ -147,6 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const disabledTopics = new Set(); // Track which topics have disabled inputs
   const generatingTasks = new Set(); // Track task generation state per topic
   const topicHints = {}; // { topicKey: { hints: [...], count: number } }
+  let currentlyGeneratingTopic = null; // Track which topic is currently generating
 
   profileDiv.style.display = 'none';
   logoutBtn.style.display  = 'none';
@@ -395,6 +396,17 @@ document.addEventListener('DOMContentLoaded', () => {
     showMessage(selectedTopic, 'user');
     if (!currentTaskRaw)
       diffPromptMsg = showMessage('Select difficulty 👇', 'bot');
+  }
+
+  // Check if this topic was generating and re-enable buttons if needed
+  if (currentlyGeneratingTopic === currentTopicKey) {
+    const difficultyButtons = document.querySelectorAll('#difficulty-buttons button');
+    difficultyButtons.forEach(btn => btn.disabled = true);
+    console.log('Buttons remain disabled for topic that is generating');
+  } else {
+    const difficultyButtons = document.querySelectorAll('#difficulty-buttons button');
+    difficultyButtons.forEach(btn => btn.disabled = false);
+    console.log('Buttons enabled for topic that is not generating');
   }
 
   const hasTask = Boolean(lastTasks[currentTopicKey]);
@@ -744,7 +756,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Set loading state for this specific topic
     generatingTasks.add(requestKey);
+    currentlyGeneratingTopic = requestKey;
     console.log(`Starting task generation for topic: ${requestKey}`);
+
+    // Disable difficulty buttons only if this is the current active topic
+    if (currentTopicKey === requestKey) {
+      const difficultyButtons = document.querySelectorAll('#difficulty-buttons button');
+      difficultyButtons.forEach(btn => btn.disabled = true);
+      console.log('Difficulty buttons disabled for current topic during task generation');
+    }
 
     try {
       const res = await fetch(apiUrl('/generate_task'), {
@@ -828,6 +848,15 @@ document.addEventListener('DOMContentLoaded', () => {
       // Clear loading state for this specific topic
       generatingTasks.delete(requestKey);
       console.log(`Task generation completed for topic: ${requestKey}`);
+      
+      // Re-enable difficulty buttons after generation
+      const difficultyButtons = document.querySelectorAll('#difficulty-buttons button');
+      difficultyButtons.forEach(btn => btn.disabled = false);
+      console.log('Difficulty buttons re-enabled after generation');
+      
+      // Reset the flag after re-enabling buttons
+      currentlyGeneratingTopic = null;
+      
       stopNotice();
     }
     if (currentTopicKey === requestKey) {
