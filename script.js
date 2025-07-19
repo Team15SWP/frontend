@@ -463,6 +463,41 @@ document.addEventListener('DOMContentLoaded', () => {
 
     fileInput.value = '';
 
+    // Clear all session data related to topics
+    Object.keys(chats).forEach(key => delete chats[key]);
+    Object.keys(lastTasks).forEach(key => delete lastTasks[key]);
+    Object.keys(lastDifficulty).forEach(key => delete lastDifficulty[key]);
+    Object.keys(topicHints).forEach(key => delete topicHints[key]);
+    submittingTopics.clear();
+    disabledTopics.clear();
+    generatingTasks.clear();
+    
+    // Reset current session variables
+    selectedTopic = null;
+    currentTopicKey = null;
+    currentDifficulty = null;
+    currentTaskRaw = '';
+    syllabusLoaded = false;
+    diffPromptMsg = null;
+    currentlyGeneratingTopic = null;
+    attemptMade = false;
+    
+    // Clear UI elements
+    messagesBox.innerHTML = '';
+    userInput.value = '';
+    userInput.disabled = true;
+    submitCodeBtn.disabled = true;
+    hintBtn.disabled = true;
+    diffBox.style.display = 'none';
+    
+    // Clear any active topic selection
+    document.querySelectorAll('.sidebar li').forEach(li => {
+      li.classList.remove('active-topic');
+    });
+    
+    // Show quote again
+    if (quoteBlock) quoteBlock.style.display = 'block';
+
     fetch(apiUrl('/delete_syllabus'), { 
       method: 'DELETE',
       headers: getAuthHeaders()
