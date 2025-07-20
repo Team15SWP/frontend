@@ -1040,7 +1040,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const labels = { beginner: '🟢 Beginner', medium: '🟡 Medium', hard: '🔴 Hard' };
-    showMessage(labels[level], 'user');
+    pushToChat(labels[level], 'user', requestKey);
     const stopNotice = makeWaitingNotice('⏳ Generating your exercise, please wait…');
 
     // Set loading state for this specific topic
@@ -1135,7 +1135,7 @@ document.addEventListener('DOMContentLoaded', () => {
       console.error('Task generation error:', err);
       // Only show error message if page is not being refreshed
       if (!isPageRefreshing) {
-        showMessage(`Error: ${err.message}`, 'bot');
+        pushToChat(`Error: ${err.message}`, 'bot', requestKey);
       }
     } finally {
       // Clear loading state for this specific topic
