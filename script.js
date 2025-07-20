@@ -296,8 +296,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
   const makeWaitingNotice = txt => {
-    const node = showMessage(txt, 'bot');
-    return () => node.remove();
+    const div = document.createElement('div');
+    div.className = 'message bot';
+    div.textContent = txt;
+    messagesBox.appendChild(div);
+    messagesBox.scrollTop = messagesBox.scrollHeight;
+    return () => div.remove();
   };
   const showCodeMessage = code => {
     const d = document.createElement('div');
