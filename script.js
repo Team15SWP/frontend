@@ -742,13 +742,14 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      const data = await res.json();
-      
-      // Save token BEFORE calling finishLogin
-      if (data.token) localStorage.setItem('pp_token', data.token);
-      
-      await finishLogin(data.name || name, false);
-      closeModal();
+      // Do NOT log in the user automatically!
+      // const data = await res.json();
+      // if (data.token) localStorage.setItem('pp_token', data.token);
+      // await finishLogin(data.name || name, false);
+      // closeModal();
+
+      // Instead, show a message to check email for verification
+      showSuErr('✅ Registration successful! Please check your email to verify your account before logging in.');
     } catch (e2) {
       showSuErr(`Network error: ${e2.message}`);
     }
